@@ -5,8 +5,8 @@
   "homepage": "https://mohinext.github.io/Eurosia-Datapilot-AI",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
-    "build": "vite build",
+    "dev": "vite",
+    "build": "tsc && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
