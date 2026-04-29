@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ChevronRight, 
   Download, 
@@ -30,12 +30,15 @@ import {
   ChevronDown,
   Sparkles,
   Chrome,
-  Copy
+  Copy,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Dashboard } from './components/Dashboard';
 import { DataTable } from './components/DataTable';
 import { ThemeToggle } from './components/ThemeToggle';
+import { Tooltip } from './components/ui/Tooltip';
+import { useAutosave } from './hooks/useAutosave';
 
 const Navbar = ({ onLogin }: { onLogin: () => void }) => {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -189,24 +192,52 @@ const Navbar = ({ onLogin }: { onLogin: () => void }) => {
 };
 
 const AISandbox = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 'error') => void }) => {
-  const [prompt, setPrompt] = useState("");
-  const [targetUrl, setTargetUrl] = useState("");
+  const [prompt, setPrompt] = useAutosave("sandbox_prompt", "");
+  const [targetUrl, setTargetUrl] = useAutosave("sandbox_url", "");
   const [isExtracting, setIsExtracting] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [extractionStatus, setExtractionStatus] = useState<string>("");
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const steps = [
+    { key: 'parsing', label: 'Parsing HTML', icon: <Code2 size={14} /> },
+    { key: 'analyzing', label: 'AI Analyzing', icon: <Cpu size={14} /> },
+    { key: 'extracting', label: 'Extracting Data', icon: <Table size={14} /> },
+  ];
+
+  const [currentStep, setCurrentStep] = useState<string>("");
 
   const handleExtract = async () => {
     if (!prompt.trim()) return;
+    
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    
     setIsExtracting(true);
     setResult(null);
+    setCurrentStep("parsing");
+    setExtractionStatus("Reading page structure...");
+    
+    // Simulate step progression for better UX since the backend is one atomic call
+    const stepTimer = setTimeout(() => {
+      setCurrentStep("analyzing");
+      setExtractionStatus("Reasoning about data patterns...");
+    }, 1500);
+
+    const stepTimer2 = setTimeout(() => {
+      setCurrentStep("extracting");
+      setExtractionStatus("Converting to structured JSON...");
+    }, 4000);
     
     try {
       const response = await fetch("/api/extractions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({ 
           instruction: prompt,
-          url: targetUrl || window.location.href, // Use input URL or current fallback
-          html: targetUrl ? undefined : document.documentElement.outerHTML // Only send HTML if no URL provided
+          url: targetUrl || window.location.href,
+          html: targetUrl ? undefined : document.documentElement.outerHTML
         })
       });
 
@@ -216,20 +247,54 @@ const AISandbox = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 'error'
         onNotify("Extraction completed!");
       } else {
         onNotify(data.error?.message || "Extraction failed", 'error');
-        console.error("Extraction failed:", data.error);
       }
-    } catch (err) {
-      onNotify("Connection error", 'error');
-      console.error("Error calling extraction API:", err);
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        onNotify("Extraction cancelled", 'error');
+      } else {
+        onNotify("Connection error", 'error');
+        console.error("Error calling extraction API:", err);
+      }
     } finally {
+      clearTimeout(stepTimer);
+      clearTimeout(stepTimer2);
       setIsExtracting(false);
+      setExtractionStatus("");
+      setCurrentStep("");
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
   };
 
   const copyToClipboard = () => {
     if (!result) return;
-    navigator.clipboard.writeText(JSON.stringify(result, null, 2));
-    onNotify("Result copied to clipboard!");
+    navigator.clipboard.writeText(JSON.stringify(result.rows, null, 2));
+    onNotify("Result copied as JSON!");
+  };
+
+  const downloadJSON = () => {
+    if (!result || !result.rows.length) return;
+    const blob = new Blob([JSON.stringify(result.rows, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "extracted_data.json");
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    onNotify("JSON exported successfully!");
+  };
+
+  const showLiveAPI = () => {
+    const mockApiUrl = `https://api.eurosia.ai/v1/extract?url=${encodeURIComponent(targetUrl || "current")}&id=${Math.random().toString(36).substring(7)}`;
+    navigator.clipboard.writeText(mockApiUrl);
+    onNotify("Live API endpoint copied to clipboard!");
   };
 
   const downloadCSV = () => {
@@ -265,34 +330,136 @@ const AISandbox = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 'error'
             <div className="mb-6 space-y-4">
               <div className="relative">
                 <Globe className="absolute left-4 top-1/2 -translate-y-1/2 text-app-muted-fg" size={18} />
-                <input 
-                  type="text"
-                  value={targetUrl}
-                  onChange={(e) => setTargetUrl(e.target.value)}
-                  placeholder="URL to extract from (leave blank for current page)"
-                  className="w-full bg-app-bg border border-app-border rounded-xl pl-12 pr-6 py-4 text-sm text-app-fg placeholder-app-muted-fg outline-none focus:border-blue-500/50 transition-all font-mono"
-                />
+                <Tooltip content="The URL of the website you want to scrape" position="top">
+                  <input 
+                    type="text"
+                    value={targetUrl}
+                    onChange={(e) => setTargetUrl(e.target.value)}
+                    placeholder="URL to extract from (leave blank for current page)"
+                    className="w-full bg-app-bg border border-app-border rounded-xl pl-12 pr-6 py-4 text-sm text-app-fg placeholder-app-muted-fg outline-none focus:border-blue-500/50 transition-all font-mono"
+                  />
+                </Tooltip>
               </div>
               <div className="relative">
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="Example: Extract product names, prices, and ratings from this Amazon results page"
-                  className="w-full bg-app-bg border border-app-border rounded-xl px-6 py-6 text-app-fg placeholder-app-muted-fg outline-none focus:border-blue-500/50 transition-all min-h-[120px] resize-none text-lg leading-relaxed shadow-inner font-sans"
-                />
-                <button
-                  onClick={handleExtract}
-                  disabled={isExtracting || !prompt.trim()}
-                  className="absolute bottom-4 right-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-8 py-3 rounded-lg font-bold transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20 active:scale-95 font-sans"
-                >
-                  {isExtracting ? (
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin font-sans"></div>
-                  ) : (
-                    <Zap size={18} />
+                <Tooltip content="Describe the fields and data points to extract in plain English" position="top">
+                  <textarea
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="Example: Extract product names, prices, and ratings from this Amazon results page"
+                    className="w-full bg-app-bg border border-app-border rounded-xl px-6 py-6 text-app-fg placeholder-app-muted-fg outline-none focus:border-blue-500/50 transition-all min-h-[120px] resize-none text-lg leading-relaxed shadow-inner font-sans"
+                    disabled={isExtracting}
+                  />
+                </Tooltip>
+                <div className="absolute bottom-4 right-4 flex items-center gap-3">
+                  {isExtracting && (
+                    <Tooltip content="Stop the current processing job" position="top">
+                      <button
+                        onClick={handleCancel}
+                        className="bg-red-500/10 hover:bg-red-500/20 text-red-500 px-4 py-3 rounded-lg font-bold transition-all flex items-center gap-2 active:scale-95 font-sans border border-red-500/20"
+                      >
+                        <X size={18} />
+                        Cancel
+                      </button>
+                    </Tooltip>
                   )}
-                  Run AI Extraction
-                </button>
+                  <Tooltip content="Analyze and extract structured data" position="top">
+                    <button
+                      onClick={handleExtract}
+                      disabled={isExtracting || !prompt.trim()}
+                      className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-8 py-3 rounded-lg font-bold transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20 active:scale-95 font-sans"
+                    >
+                      {isExtracting ? (
+                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin font-sans"></div>
+                      ) : (
+                        <Zap size={18} />
+                      )}
+                      {isExtracting ? "Processing..." : "Run AI Extraction"}
+                    </button>
+                  </Tooltip>
+                </div>
               </div>
+
+              {/* Progress Indicators */}
+              <AnimatePresence>
+                {isExtracting && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="pt-4 border-t border-app-border mt-4">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                        <div className="flex items-center gap-4">
+                          {steps.map((step, idx) => {
+                            const isPast = steps.findIndex(s => s.key === currentStep) > idx;
+                            const isActive = currentStep === step.key;
+                            
+                            return (
+                              <div key={step.key} className="flex items-center gap-2">
+                                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] transition-all duration-500 ${
+                                  isPast ? 'bg-emerald-500 text-white' : 
+                                  isActive ? 'bg-blue-600 text-white animate-pulse shadow-[0_0_10px_rgba(37,99,235,0.5)]' : 
+                                  'bg-app-bg border border-app-border text-app-muted-fg'
+                                }`}>
+                                  {isPast ? <CheckCircle2 size={12} /> : step.icon}
+                                </div>
+                                <span className={`text-[11px] font-bold uppercase tracking-wider hidden sm:block ${
+                                  isActive ? 'text-blue-500' : 
+                                  isPast ? 'text-emerald-500' : 
+                                  'text-app-muted-fg'
+                                }`}>
+                                  {step.label}
+                                </span>
+                                {idx < steps.length - 1 && (
+                                  <div className="w-4 h-px bg-app-border mx-1 hidden sm:block"></div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="text-xs font-medium text-blue-500/80 font-mono animate-pulse">
+                          {extractionStatus}
+                        </div>
+                      </div>
+                      
+                      {/* Detailed Progress Bar */}
+                      <div className="w-full h-2 bg-app-bg rounded-full overflow-hidden border border-app-border relative">
+                        <motion.div 
+                          className="h-full bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.6)]"
+                          initial={{ width: "0%" }}
+                          animate={{ 
+                            width: currentStep === "parsing" ? "25%" : 
+                                   currentStep === "analyzing" ? "60%" : 
+                                   currentStep === "extracting" ? "90%" : "0%"
+                          }}
+                          transition={{ duration: 1, ease: "easeInOut" }}
+                        />
+                        {/* Scanning shine effect */}
+                        <motion.div 
+                          className="absolute top-0 bottom-0 w-20 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                          animate={{ 
+                            left: ["-20%", "120%"]
+                          }}
+                          transition={{ 
+                            duration: 1.5, 
+                            repeat: Infinity, 
+                            ease: "linear" 
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between mt-2">
+                        <span className="text-[10px] font-mono text-app-muted-fg">Process ID: {Math.random().toString(36).substring(7).toUpperCase()}</span>
+                        <span className="text-[10px] font-mono text-blue-500 font-bold">
+                          {currentStep === "parsing" ? "25%" : 
+                           currentStep === "analyzing" ? "60%" : 
+                           currentStep === "extracting" ? "90%" : "0%"} Complete
+                        </span>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             <AnimatePresence>
@@ -307,6 +474,8 @@ const AISandbox = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 'error'
                     rows={result.rows} 
                     onCopy={copyToClipboard}
                     onDownload={downloadCSV}
+                    onDownloadJSON={downloadJSON}
+                    onLiveAPI={showLiveAPI}
                   />
                   <div className="mt-4 flex items-center justify-center gap-4 text-[10px] font-bold text-app-muted-fg uppercase tracking-widest">
                     <span>Confidence: {Math.round((result.confidence || 0.9) * 100)}%</span>
@@ -370,28 +539,67 @@ const ProductDemo = () => {
 };
 
 const HowItWorks = () => {
+  const steps = [
+    { label: "Website", icon: <Globe size={26} />, color: "bg-blue-600" },
+    { label: "Eurosia AI", icon: <Cpu size={26} />, color: "bg-purple-600" },
+    { label: "Clean Data", icon: <Table size={26} />, color: "bg-emerald-600" },
+    { label: "Export", icon: <Download size={26} />, color: "bg-orange-600" },
+  ];
+
   return (
-    <section className="px-4 sm:px-10 py-24 bg-app-bg relative overflow-hidden">
+    <section className="px-4 sm:px-10 py-32 bg-app-bg relative overflow-hidden border-b border-app-border/30">
       <div className="max-w-7xl mx-auto">
-        <div className="text-center mb-16">
-          <h2 className="text-3xl lg:text-5xl font-bold tracking-tight mb-4 text-app-fg font-heading">How It Works</h2>
-          <p className="text-app-muted-fg text-lg">Extract data in three simple steps.</p>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
-          {[
-            { step: "01", title: "Open Website", desc: "Go to any website with the data you need.", icon: <Globe size={24} /> },
-            { step: "02", title: "Smart Extract", desc: "Click “Extract with AI” and describe what you need.", icon: <Zap size={24} /> },
-            { step: "03", title: "Instant Data", desc: "Get structured JSON or export to Sheets instantly.", icon: <Table size={24} /> },
-          ].map((item, i) => (
-            <div key={i} className="relative p-8 rounded-2xl bg-app-card border border-app-border hover:border-blue-500/30 transition-all group">
-              <div className="text-5xl font-bold text-app-muted-fg/10 absolute top-4 right-6 group-hover:text-blue-500/10 transition-colors">{item.step}</div>
-              <div className="w-14 h-14 rounded-2xl bg-app-bg border border-app-border flex items-center justify-center mb-6 text-blue-500 group-hover:scale-110 transition-transform shadow-lg">
-                {item.icon}
-              </div>
-              <h3 className="text-xl font-bold mb-3 tracking-tight text-app-fg font-heading">{item.title}</h3>
-              <p className="text-app-muted-fg text-sm leading-relaxed">{item.desc}</p>
-            </div>
-          ))}
+        <div className="flex flex-col items-center justify-center">
+          <div className="w-full flex items-center justify-center gap-6 sm:gap-16 md:gap-20 lg:gap-28 mb-16 overflow-x-auto pb-4 no-scrollbar">
+            {steps.map((step, i) => (
+              <React.Fragment key={i}>
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ delay: i * 0.1 }}
+                  className="flex flex-col items-center gap-5 group shrink-0"
+                >
+                  <div className={`w-20 h-20 sm:w-24 sm:h-24 rounded-3xl ${step.color} flex items-center justify-center text-white shadow-2xl group-hover:scale-110 transition-all duration-500 cursor-default shadow-blue-500/10`}>
+                    {step.icon}
+                  </div>
+                  <span className="text-sm sm:text-base font-bold text-app-muted-fg group-hover:text-app-fg transition-colors tracking-tight uppercase tracking-wider">{step.label}</span>
+                </motion.div>
+                
+                {i < steps.length - 1 && (
+                  <div className="flex-1 min-w-[40px] max-w-[120px] h-px bg-app-border relative hidden sm:block">
+                    <motion.div 
+                      className="absolute inset-0 bg-blue-500/30 blur-[6px]"
+                      animate={{ opacity: [0.2, 0.5, 0.2] }}
+                      transition={{ duration: 3, repeat: Infinity }}
+                    />
+                    <motion.div 
+                      className="absolute top-1/2 left-0 w-8 h-8 rounded-full bg-blue-400/20 blur-xl -translate-y-1/2"
+                      animate={{ 
+                        left: ["0%", "100%"],
+                      }}
+                      transition={{ 
+                        duration: 4, 
+                        repeat: Infinity, 
+                        ease: "linear",
+                        delay: i * 1
+                      }}
+                    />
+                  </div>
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+
+          <motion.p 
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true }}
+            transition={{ delay: 0.8 }}
+            className="text-app-muted-fg text-center max-w-2xl text-xl font-medium leading-relaxed font-sans"
+          >
+            Understand your data flow in 3 seconds. Simple. Powerful. Automatic.
+          </motion.p>
         </div>
       </div>
     </section>
@@ -1325,7 +1533,7 @@ export default function App() {
       <Navbar onLogin={() => setIsLoggedIn(true)} />
       <main>
         {isLoggedIn ? (
-          <Dashboard onNotify={showNotification} />
+          <Dashboard onNotify={showNotification} onLogout={() => setIsLoggedIn(false)} />
         ) : (
           <>
             <Hero />

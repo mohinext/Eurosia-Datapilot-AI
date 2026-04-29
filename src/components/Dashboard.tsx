@@ -30,6 +30,8 @@ import {
   Tooltip
 } from 'recharts';
 import { DataTable } from './DataTable';
+import { Tooltip as CustomTooltip } from './ui/Tooltip';
+import { useAutosave } from '../hooks/useAutosave';
 
 const chartData = [
   { name: 'Mon', value: 4 },
@@ -41,15 +43,49 @@ const chartData = [
   { name: 'Sun', value: 7 },
 ];
 
-export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 'error') => void }) => {
+export const Dashboard = ({ onNotify, onLogout }: { onNotify: (m: string, t?: 'success' | 'error') => void, onLogout: () => void }) => {
+  const [isAuthorized, setIsAuthorized] = useState(() => sessionStorage.getItem('dashboard_authorized') === 'true');
+  const [password, setPassword] = useState('');
   const [activeView, setActiveView] = useState('overview');
   const [isExtracting, setIsExtracting] = useState(false);
-  const [prompt, setPrompt] = useState('');
-  const [targetUrl, setTargetUrl] = useState('');
+  const [prompt, setPrompt] = useAutosave('dashboard_prompt', '');
+  const [targetUrl, setTargetUrl] = useAutosave('dashboard_url', '');
   const [result, setResult] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [usage, setUsage] = useState<any>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [apiKeys, setApiKeys] = useState<{ id: string, name: string, key: string, status: string, createdAt: string }[]>(() => {
+    const saved = localStorage.getItem('api_keys');
+    return saved ? JSON.parse(saved) : [
+      { id: '1', name: 'Production Key', key: 'eu_live_7x9k2m4n5b1v8x3c6z', status: 'Active', createdAt: new Date(Date.now() - 172800000).toISOString() }
+    ];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('api_keys', JSON.stringify(apiKeys));
+  }, [apiKeys]);
+
+  const createApiKey = () => {
+    const name = prompt("Enter a name for your new API key:");
+    if (!name) return;
+
+    const newKey = {
+      id: Math.random().toString(36).substring(7),
+      name,
+      key: `eu_live_${Math.random().toString(36).substring(2)}${Math.random().toString(36).substring(2)}`,
+      status: 'Active',
+      createdAt: new Date().toISOString()
+    };
+    setApiKeys([newKey, ...apiKeys]);
+    onNotify("API key created successfully!");
+  };
+
+  const deleteApiKey = (id: string) => {
+    if (confirm("Are you sure you want to delete this API key? This action cannot be undone.")) {
+      setApiKeys(apiKeys.filter(k => k.id !== id));
+      onNotify("API key deleted.");
+    }
+  };
 
   useEffect(() => {
     fetchHistory();
@@ -116,8 +152,28 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
   };
 
   const copyToClipboard = (data: any) => {
-    navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-    onNotify("JSON copied to clipboard!");
+    navigator.clipboard.writeText(JSON.stringify(data.rows, null, 2));
+    onNotify("Data copied as JSON!");
+  };
+
+  const downloadJSON = (data: any) => {
+    if (!data || !data.rows.length) return;
+    const blob = new Blob([JSON.stringify(data.rows, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "extracted_data.json");
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    onNotify("JSON exported successfully!");
+  };
+
+  const showLiveAPI = (data: any) => {
+    const mockApiUrl = `https://api.eurosia.ai/v1/extract?jobId=${data.id || Math.random().toString(36).substring(7)}`;
+    navigator.clipboard.writeText(mockApiUrl);
+    onNotify("Live API endpoint copied to clipboard!");
   };
 
   const downloadCSV = (data: any) => {
@@ -140,6 +196,76 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
     onNotify("CSV download started");
   };
 
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password === 'admin123') { // Simple master password
+      setIsAuthorized(true);
+      sessionStorage.setItem('dashboard_authorized', 'true');
+      onNotify("Authorized successfully");
+    } else {
+      onNotify("Invalid master password", "error");
+    }
+  };
+
+  const handleLogout = () => {
+    setIsAuthorized(false);
+    sessionStorage.removeItem('dashboard_authorized');
+    onLogout();
+  };
+
+  if (!isAuthorized) {
+    return (
+      <div className="min-h-screen bg-app-bg flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-md bg-app-card border border-app-border rounded-3xl p-10 shadow-2xl relative overflow-hidden"
+        >
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-purple-600"></div>
+          
+          <div className="flex flex-col items-center mb-10">
+            <div className="h-16 w-16 rounded-2xl bg-blue-600 flex items-center justify-center font-bold text-3xl shadow-xl shadow-blue-500/20 text-white mb-6">
+              D
+            </div>
+            <h2 className="text-2xl font-bold text-app-fg mb-2">Admin Panel</h2>
+            <p className="text-app-muted-fg text-sm text-center">Please provide your master password to access the Datapilot dashboard.</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-app-muted-fg uppercase tracking-widest px-1">Master Password</label>
+              <input 
+                type="password" 
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-app-bg border border-app-border rounded-xl px-4 py-4 text-app-fg focus:border-blue-500/50 outline-none transition-all font-mono"
+                autoFocus
+              />
+            </div>
+            
+            <button 
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-blue-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+            >
+              <Zap size={18} />
+              Authorize Access
+            </button>
+          </form>
+
+          <div className="mt-8 flex justify-center">
+            <button 
+              onClick={onLogout}
+              className="text-xs font-bold text-app-muted-fg hover:text-app-fg transition-colors uppercase tracking-widest flex items-center gap-2"
+            >
+              <Search size={14} /> Back to Public Site
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-app-bg text-app-fg">
       {/* Sidebar */}
@@ -151,24 +277,25 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
 
         <nav className="flex-1 px-3 space-y-1">
           {[
-            { id: 'overview', icon: <LayoutDashboard size={18} />, label: 'Overview' },
-            { id: 'extractions', icon: <Database size={18} />, label: 'Extractions' },
-            { id: 'api_keys', icon: <Zap size={18} />, label: 'API Keys' },
-            { id: 'billing', icon: <Download size={18} />, label: 'Billing & Usage' },
-            { id: 'history', icon: <HistoryIcon size={18} />, label: 'History' },
+            { id: 'overview', icon: <LayoutDashboard size={18} />, label: 'Overview', tooltip: 'Main dashboard view' },
+            { id: 'extractions', icon: <Database size={18} />, label: 'Extractions', tooltip: 'Manage your data collections' },
+            { id: 'api_keys', icon: <Zap size={18} />, label: 'API Keys', tooltip: 'Developer access credentials' },
+            { id: 'billing', icon: <Download size={18} />, label: 'Billing & Usage', tooltip: 'Plan and payment history' },
+            { id: 'history', icon: <HistoryIcon size={18} />, label: 'History', tooltip: 'Past extraction logs' },
           ].map(item => (
-            <button
-              key={item.id}
-              onClick={() => setActiveView(item.id)}
-              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                activeView === item.id 
-                ? 'bg-blue-600/10 text-blue-400 border border-blue-600/20' 
-                : 'text-app-muted-fg hover:text-app-fg hover:bg-app-card border border-transparent'
-              }`}
-            >
-              {item.icon}
-              {item.label}
-            </button>
+            <CustomTooltip key={item.id} content={item.tooltip} position="right">
+              <button
+                onClick={() => setActiveView(item.id)}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  activeView === item.id 
+                  ? 'bg-blue-600/10 text-blue-400 border border-blue-600/20' 
+                  : 'text-app-muted-fg hover:text-app-fg hover:bg-app-card border border-transparent'
+                }`}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            </CustomTooltip>
           ))}
         </nav>
 
@@ -189,12 +316,19 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
           )}
           <button 
             onClick={() => setActiveView('settings')}
-            className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-all ${
-              activeView === 'settings' ? 'text-blue-400 bg-blue-600/10' : 'text-app-muted-fg hover:text-app-fg'
+            className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-all rounded-xl ${
+              activeView === 'settings' ? 'text-blue-400 bg-blue-600/10 border border-blue-600/20' : 'text-app-muted-fg hover:text-app-fg border border-transparent'
             }`}
           >
             <Settings size={18} />
             Settings
+          </button>
+          <button 
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-red-400 hover:bg-red-500/10 rounded-xl transition-all border border-transparent hover:border-red-500/20"
+          >
+            <ExternalLink size={18} className="rotate-180" />
+            Sign Out
           </button>
         </div>
       </aside>
@@ -237,18 +371,20 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
                 {/* Stats Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                   {[
-                    { label: 'Total Extractions', value: history.length, trend: '+12%', color: 'text-blue-400' },
-                    { label: 'Credits Remaining', value: usage?.credits_remaining || 0, trend: usage?.plan || 'Free', color: 'text-green-400' },
-                    { label: 'Success Rate', value: '100%', trend: 'Healthy', color: 'text-purple-400' },
-                    { label: 'API Calls', value: history.length, trend: 'Healthy', color: 'text-app-muted-fg' },
+                    { label: 'Total Extractions', value: history.length, trend: '+12%', color: 'text-blue-400', tooltip: 'Lifetime extractions processed' },
+                    { label: 'Credits Remaining', value: usage?.credits_remaining || 0, trend: usage?.plan || 'Free', color: 'text-green-400', tooltip: 'Current billing balance' },
+                    { label: 'Success Rate', value: '100%', trend: 'Healthy', color: 'text-purple-400', tooltip: 'Extraction completion accuracy' },
+                    { label: 'API Calls', value: history.length, trend: 'Healthy', color: 'text-app-muted-fg', tooltip: 'Requests made via dev API' },
                   ].map((stat, i) => (
-                    <div key={i} className="bg-app-card border border-app-border p-6 rounded-2xl">
-                      <div className="text-xs font-bold text-app-muted-fg uppercase tracking-widest mb-2">{stat.label}</div>
-                      <div className="flex items-end justify-between">
-                        <div className={`text-2xl font-bold ${stat.color}`}>{stat.value}</div>
-                        <div className="text-[10px] font-bold text-app-muted-fg bg-app-bg px-2 py-1 rounded">{stat.trend}</div>
+                    <CustomTooltip key={i} content={stat.tooltip} position="top">
+                      <div className="bg-app-card border border-app-border p-6 rounded-2xl w-full">
+                        <div className="text-xs font-bold text-app-muted-fg uppercase tracking-widest mb-2">{stat.label}</div>
+                        <div className="flex items-end justify-between">
+                          <div className={`text-2xl font-bold ${stat.color}`}>{stat.value}</div>
+                          <div className="text-[10px] font-bold text-app-muted-fg bg-app-bg px-2 py-1 rounded">{stat.trend}</div>
+                        </div>
                       </div>
-                    </div>
+                    </CustomTooltip>
                   ))}
                 </div>
 
@@ -273,29 +409,35 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
                       <div className="space-y-4">
                         <div className="relative">
                           <Globe className="absolute left-4 top-1/2 -translate-y-1/2 text-app-muted-fg" size={16} />
-                          <input 
-                            type="text" 
-                            placeholder="URL to extract from (e.g. amazon.com/product/123)"
-                            value={targetUrl}
-                            onChange={(e) => setTargetUrl(e.target.value)}
-                            className="w-full bg-app-bg border border-app-border rounded-xl pl-12 pr-4 py-3 text-sm outline-none focus:border-blue-500/50 transition-all font-mono text-app-fg"
-                          />
+                          <CustomTooltip content="URL to fetch HTML from" position="top">
+                            <input 
+                              type="text" 
+                              placeholder="URL to extract from (e.g. amazon.com/product/123)"
+                              value={targetUrl}
+                              onChange={(e) => setTargetUrl(e.target.value)}
+                              className="w-full bg-app-bg border border-app-border rounded-xl pl-12 pr-4 py-3 text-sm outline-none focus:border-blue-500/50 transition-all font-mono text-app-fg"
+                            />
+                          </CustomTooltip>
                         </div>
                         <div className="relative">
-                          <textarea
-                            placeholder="Example: Extract all product names, prices, and ratings from this page..."
-                            value={prompt}
-                            onChange={(e) => setPrompt(e.target.value)}
-                            className="w-full h-32 bg-app-bg border border-app-border rounded-xl p-4 text-sm outline-none focus:border-blue-500/50 transition-all resize-none text-app-fg"
-                          />
-                          <button 
-                            onClick={handleExtract}
-                            disabled={isExtracting || !prompt.trim()}
-                            className="absolute bottom-4 right-4 px-6 py-3 bg-blue-600 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-blue-500/20 active:scale-95 transition-all disabled:opacity-50 disabled:grayscale text-white"
-                          >
-                            {isExtracting ? <Loader2 size={18} className="animate-spin" /> : <Zap size={18} />}
-                            {isExtracting ? 'Analyzing...' : 'Run Extraction'}
-                          </button>
+                          <CustomTooltip content="Ask the AI to find specific data" position="top">
+                            <textarea
+                              placeholder="Example: Extract all product names, prices, and ratings from this page..."
+                              value={prompt}
+                              onChange={(e) => setPrompt(e.target.value)}
+                              className="w-full h-32 bg-app-bg border border-app-border rounded-xl p-4 text-sm outline-none focus:border-blue-500/50 transition-all resize-none text-app-fg"
+                            />
+                          </CustomTooltip>
+                          <CustomTooltip content="Execute Extraction" position="left">
+                            <button 
+                              onClick={handleExtract}
+                              disabled={isExtracting || !prompt.trim()}
+                              className="absolute bottom-4 right-4 px-6 py-3 bg-blue-600 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-blue-500/20 active:scale-95 transition-all disabled:opacity-50 disabled:grayscale text-white"
+                            >
+                              {isExtracting ? <Loader2 size={18} className="animate-spin" /> : <Zap size={18} />}
+                              {isExtracting ? 'Analyzing...' : 'Run Extraction'}
+                            </button>
+                          </CustomTooltip>
                         </div>
                       </div>
 
@@ -310,6 +452,8 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
                             rows={result.rows} 
                             onCopy={() => copyToClipboard(result)}
                             onDownload={() => downloadCSV(result)}
+                            onDownloadJSON={() => downloadJSON(result)}
+                            onLiveAPI={() => showLiveAPI(result)}
                           />
                         </motion.div>
                       )}
@@ -431,26 +575,47 @@ export const Dashboard = ({ onNotify }: { onNotify: (m: string, t?: 'success' | 
                       <h3 className="text-xl font-bold mb-1">API Keys</h3>
                       <p className="text-xs text-app-muted-fg">Manage your keys to access Eurosia via our developer API.</p>
                     </div>
-                    <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm font-bold active:scale-95 transition-all text-white">
+                    <button 
+                      onClick={createApiKey}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm font-bold active:scale-95 transition-all text-white"
+                    >
                       <Plus size={16} /> Create Key
                     </button>
                   </div>
 
                   <div className="space-y-4">
-                    {[
-                      { name: 'Production Key', key: 'eu_live_xxxxxxxxxxxxxxx', status: 'Active', created: '2 days ago' },
-                    ].map((key, i) => (
-                      <div key={i} className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-2xl">
+                    {apiKeys.length === 0 ? (
+                      <div className="text-center py-12 text-app-muted-fg border-2 border-dashed border-app-border rounded-2xl">
+                        No API keys found. Create one to get started.
+                      </div>
+                    ) : apiKeys.map((key) => (
+                      <div key={key.id} className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-2xl">
                         <div className="space-y-1">
                           <div className="text-sm font-bold flex items-center gap-2 text-app-fg">
                              {key.name} 
                              <span className="text-[10px] font-bold text-green-400 bg-green-400/10 px-2 py-0.5 rounded uppercase">{key.status}</span>
                           </div>
-                          <div className="text-xs font-mono text-app-muted-fg">{key.key}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="text-xs font-mono text-app-muted-fg">{key.key}</div>
+                            <button 
+                              onClick={() => {
+                                navigator.clipboard.writeText(key.key);
+                                onNotify("API Key copied!");
+                              }}
+                              className="p-1 hover:text-blue-400 transition-colors"
+                            >
+                              <Share2 size={12} />
+                            </button>
+                          </div>
                         </div>
                         <div className="flex items-center gap-4 text-xs text-app-muted-fg">
-                           <span>Created {key.created}</span>
-                           <button className="p-2 text-app-muted-fg hover:text-red-400 transition-all"><Trash2 size={16} /></button>
+                           <span>Created {new Date(key.createdAt).toLocaleDateString()}</span>
+                           <button 
+                             onClick={() => deleteApiKey(key.id)}
+                             className="p-2 text-app-muted-fg hover:text-red-400 transition-all"
+                           >
+                            <Trash2 size={16} />
+                           </button>
                         </div>
                       </div>
                     ))}
